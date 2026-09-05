@@ -1670,6 +1670,61 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // else -- a resolution change -- happened to force a rebuild by accident.
     const bool tuningChanged = !TuningMatchesFeature(cfg);
 
+    // A size has to hold still before it is believed.
+    //
+    // A game can hand this pass two different frame sizes on alternating dispatches, and taking each
+    // of them at face value costs a tear-down and a model creation per frame. MSFS 2024 does exactly
+    // that: it renders the interface's character portraits into an offscreen view at a fixed
+    // 2560x1440 and evaluates it interleaved one-for-one with the main view for about 150 frames,
+    // every time the interface needs a portrait -- at flight load, and again whenever the player
+    // opens the avatar editor. Since retired features and surfaces are parked for a while rather
+    // than freed, the parked set then grows without bound: measured at 0.59 GB per dispatch, and
+    // DXGI_ERROR_DEVICE_RESET at 52 GB of video memory on a 32 GB card.
+    //
+    // So a size must arrive on kSettleDispatches consecutive dispatches before anything is torn down
+    // or built. Two sizes arriving alternately never reach that, so the pass stays built for
+    // whichever one settled and the odd frame at the other size is passed over. That costs nothing
+    // the game can see, because a rebuild frame returns without evaluating anyway -- those frames
+    // were already going without the model, they were just paying for a model creation first. A real
+    // resolution or quality change reaches the count in half a second and rebuilds exactly once.
+    //
+    // The count is kept for every dispatch, not only the ones that differ, so that a frame at the
+    // built size breaks a run: "consecutive" has to mean consecutive or an interleaved size would
+    // still reach the count, just twice as slowly.
+    static constexpr int kSettleDispatches = 30;
+    static unsigned int settledWidth = 0;
+    static unsigned int settledHeight = 0;
+    static unsigned int settledWorkWidth = 0;
+    static unsigned int settledWorkHeight = 0;
+    static int settledRun = 0;
+
+    if (width != settledWidth || (unsigned int) height != settledHeight ||
+        workWidth != settledWorkWidth || workHeight != settledWorkHeight)
+    {
+        settledWidth = width;
+        settledHeight = (unsigned int) height;
+        settledWorkWidth = workWidth;
+        settledWorkHeight = workHeight;
+        settledRun = 1;
+    }
+    else if (settledRun < kSettleDispatches)
+    {
+        ++settledRun;
+    }
+
+    if (resolutionChanged && settledRun < kSettleDispatches)
+    {
+        static unsigned long long unsettled = 0;
+
+        if (++unsettled == 1 || unsettled % 100 == 0)
+            LOG_INFO("DLSS-NR: {}x{} has not held still for {} dispatches, so nothing is being built "
+                     "for it -- the pass stays at {}x{} and this frame is passed over ({} so far)",
+                     width, height, kSettleDispatches, g_nr.width, g_nr.height, unsettled);
+
+        device->Release();
+        return;
+    }
+
     if (g_nr.feature != nullptr && (resolutionChanged || tuningChanged))
     {
         // Parked rather than released: with frame generation the GPU can still be several frames
