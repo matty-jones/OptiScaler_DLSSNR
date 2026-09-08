@@ -1691,7 +1691,7 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // The count is kept for every dispatch, not only the ones that differ, so that a frame at the
     // built size breaks a run: "consecutive" has to mean consecutive or an interleaved size would
     // still reach the count, just twice as slowly.
-    static constexpr int kSettleDispatches = 30;
+    static constexpr int kSettleDispatches = 120;
     static unsigned int settledWidth = 0;
     static unsigned int settledHeight = 0;
     static unsigned int settledWorkWidth = 0;
