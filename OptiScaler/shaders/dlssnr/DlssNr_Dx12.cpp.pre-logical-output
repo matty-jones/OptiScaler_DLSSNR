@@ -1527,42 +1527,8 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     }
 
     const D3D12_RESOURCE_DESC desc = target->GetDesc();
-    const auto resourceWidth = (unsigned int) desc.Width;
-    const auto resourceHeight = (unsigned int) desc.Height;
-
-    // The allocation is not always the picture. Some titles hand DLSS a backing texture that is
-    // larger than the logical output subrect; Zero Company's Overwatch path is one example, where a
-    // 2560x1440 DLSS target can temporarily live in a 2560x2048 resource. Treating the allocation as
-    // the frame makes NR rebuild for a resolution that the game never actually displayed.
-    //
-    // Bound the game's stated output by the allocation so bad metadata can never make the pass read
-    // beyond the resource. A zero value preserves the old descriptor-based behaviour.
-    const auto width = frame.OutputWidth != 0
-                           ? std::min(frame.OutputWidth, resourceWidth)
-                           : resourceWidth;
-    const auto height = frame.OutputHeight != 0
-                            ? std::min(frame.OutputHeight, resourceHeight)
-                            : resourceHeight;
-
-    if (width != resourceWidth || height != resourceHeight)
-    {
-        static unsigned int saidWidth = 0;
-        static unsigned int saidHeight = 0;
-        static unsigned int saidResourceWidth = 0;
-        static unsigned int saidResourceHeight = 0;
-
-        if (saidWidth != width || saidHeight != height ||
-            saidResourceWidth != resourceWidth || saidResourceHeight != resourceHeight)
-        {
-            LOG_INFO("DLSS-NR: logical output {}x{} is inside a {}x{} backing resource; using the "
-                     "logical dimensions for the NR pass",
-                     width, height, resourceWidth, resourceHeight);
-            saidWidth = width;
-            saidHeight = height;
-            saidResourceWidth = resourceWidth;
-            saidResourceHeight = resourceHeight;
-        }
-    }
+    const auto width = (unsigned int) desc.Width;
+    const auto height = desc.Height;
 
     // Depth and motion vectors are the upscaler's inputs and so are at render resolution, while colour
     // and output are at display resolution. The model takes that as a subrect per resource rather than
@@ -1703,61 +1669,6 @@ void DlssNr_Dx12::Dispatch(ID3D12GraphicsCommandList* cmdList, ID3D12Resource* c
     // never called, which is why every one of these controls appeared to do nothing until something
     // else -- a resolution change -- happened to force a rebuild by accident.
     const bool tuningChanged = !TuningMatchesFeature(cfg);
-
-    // A size has to hold still before it is believed.
-    //
-    // A game can hand this pass two different frame sizes on alternating dispatches, and taking each
-    // of them at face value costs a tear-down and a model creation per frame. MSFS 2024 does exactly
-    // that: it renders the interface's character portraits into an offscreen view at a fixed
-    // 2560x1440 and evaluates it interleaved one-for-one with the main view for about 150 frames,
-    // every time the interface needs a portrait -- at flight load, and again whenever the player
-    // opens the avatar editor. Since retired features and surfaces are parked for a while rather
-    // than freed, the parked set then grows without bound: measured at 0.59 GB per dispatch, and
-    // DXGI_ERROR_DEVICE_RESET at 52 GB of video memory on a 32 GB card.
-    //
-    // So a size must arrive on kSettleDispatches consecutive dispatches before anything is torn down
-    // or built. Two sizes arriving alternately never reach that, so the pass stays built for
-    // whichever one settled and the odd frame at the other size is passed over. That costs nothing
-    // the game can see, because a rebuild frame returns without evaluating anyway -- those frames
-    // were already going without the model, they were just paying for a model creation first. A real
-    // resolution or quality change reaches the count in half a second and rebuilds exactly once.
-    //
-    // The count is kept for every dispatch, not only the ones that differ, so that a frame at the
-    // built size breaks a run: "consecutive" has to mean consecutive or an interleaved size would
-    // still reach the count, just twice as slowly.
-    static constexpr int kSettleDispatches = 120;
-    static unsigned int settledWidth = 0;
-    static unsigned int settledHeight = 0;
-    static unsigned int settledWorkWidth = 0;
-    static unsigned int settledWorkHeight = 0;
-    static int settledRun = 0;
-
-    if (width != settledWidth || (unsigned int) height != settledHeight ||
-        workWidth != settledWorkWidth || workHeight != settledWorkHeight)
-    {
-        settledWidth = width;
-        settledHeight = (unsigned int) height;
-        settledWorkWidth = workWidth;
-        settledWorkHeight = workHeight;
-        settledRun = 1;
-    }
-    else if (settledRun < kSettleDispatches)
-    {
-        ++settledRun;
-    }
-
-    if (resolutionChanged && settledRun < kSettleDispatches)
-    {
-        static unsigned long long unsettled = 0;
-
-        if (++unsettled == 1 || unsettled % 100 == 0)
-            LOG_INFO("DLSS-NR: {}x{} has not held still for {} dispatches, so nothing is being built "
-                     "for it -- the pass stays at {}x{} and this frame is passed over ({} so far)",
-                     width, height, kSettleDispatches, g_nr.width, g_nr.height, unsettled);
-
-        device->Release();
-        return;
-    }
 
     if (g_nr.feature != nullptr && (resolutionChanged || tuningChanged))
     {
@@ -2629,12 +2540,6 @@ void EvaluateAfterUpscale(ID3D12GraphicsCommandList* cmdList, NVSDK_NGX_Paramete
         if (params->Get(NVSDK_NGX_Parameter_Reset, &gameReset) == NVSDK_NGX_Result_Success)
             frame.Reset = gameReset != 0;
     }
-
-    // The logical output dimensions are written by DLSSFeature::ProcessInitParams when the feature is
-    // created. Keep them with the per-dispatch frame metadata so the NR pass can distinguish the
-    // picture from a larger backing allocation. Get() failure leaves the zero-initialised fallback.
-    params->Get(NVSDK_NGX_Parameter_OutWidth, &frame.OutputWidth);
-    params->Get(NVSDK_NGX_Parameter_OutHeight, &frame.OutputHeight);
 
     // How much of the guides is real. See DlssNrFrameInfo -- zero means the game did not say.
     params->Get(NVSDK_NGX_Parameter_DLSS_Render_Subrect_Dimensions_Width, &frame.RenderSubrectWidth);

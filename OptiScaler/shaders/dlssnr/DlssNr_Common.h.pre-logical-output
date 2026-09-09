@@ -49,11 +49,8 @@ constexpr uint32_t kDlssNrMeterGrid = 64;
 // choices -- preset, intensity, strengths, paper white -- stay in Config, so a caller placing this
 // pass in a new pipeline does not have to plumb a dozen sliders through it.
 //
-// Physical resource sizes still come from the resources themselves. The logical output size may be
-// smaller than the allocation, though: some games allocate a larger backing texture and render the
-// real output into a subrect. OutputWidth/OutputHeight carry the dimensions that DLSS was created to
-// produce. Zero means the caller did not supply them, in which case the output descriptor remains the
-// fallback.
+// Sizes are deliberately absent. The output's dimensions come from its own descriptor and the guide
+// sizes from theirs, so there is one less thing for a call site to get wrong.
 struct DlssNrFrameInfo
 {
     // Which way round depth runs. The game states this when it creates its own upscaler.
@@ -86,14 +83,6 @@ struct DlssNrFrameInfo
     // The scale the game multiplied its buffer by for float precision, which DLSS is told so it can
     // undo it. Usually 1. Divided out before the exposure is applied, exactly as FSR's PrepareRgb does.
     float PreExposure = 1.0f;
-
-    // The logical DLSS output. This is not necessarily the same thing as the allocation dimensions
-    // of the output texture. In particular, Zero Company sometimes supplies a 2560x2048 backing
-    // resource while the DLSS target/display remains 2560x1440.
-    //
-    // Zero means unknown; the D3D12 pass then falls back to the resource descriptor as before.
-    unsigned int OutputWidth = 0;
-    unsigned int OutputHeight = 0;
 
     // How much of the depth and motion vector textures the game actually rendered into.
     //
